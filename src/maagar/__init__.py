@@ -30,12 +30,14 @@ from maagar.errors import (
     UnknownTenant,
 )
 from maagar.placement import (
+    CatalogDirectory,
     DatabasePerTenant,
     Directory,
     Isolation,
     Placement,
     SharedDatabase,
     StaticDirectory,
+    TenantRecord,
 )
 from maagar.rls import (
     TENANT_SETTING,
@@ -49,6 +51,7 @@ from maagar.tenant import Tenant
 
 __all__ = [
     "TENANT_SETTING",
+    "CatalogDirectory",
     "DatabasePerTenant",
     "Directory",
     "EnginePool",
@@ -65,6 +68,7 @@ __all__ = [
     "SupportsProvisioning",
     "TargetOutcome",
     "Tenant",
+    "TenantRecord",
     "UnknownTenant",
     "apply_policies",
     "assert_unprivileged",

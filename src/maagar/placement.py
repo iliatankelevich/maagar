@@ -30,7 +30,7 @@ reading the code instead of by reading the deployment.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -210,3 +210,85 @@ class StaticDirectory:
 
     async def roster(self) -> Sequence[Tenant]:
         return tuple(self._placements)
+
+
+@dataclass(frozen=True, slots=True)
+class TenantRecord:
+    """What a **control plane** knows about a tenant's storage — and deliberately no more.
+
+    ⚠️ **There is no DSN here, and its absence is the design.** A control plane that handed out
+    ``postgresql://user:password@host/kip_alpha`` would be holding a credential to every service's
+    database, and "only the mind holds a memory-database credential" would be over — not overruled,
+    just quietly meaningless.
+
+    So the registry answers *"tenant alpha is isolated, database ``kip_alpha``, instance
+    ``mem-1``"*, and each service combines that with **its own** configured credential for
+    ``mem-1``. Placement is routing information. Credentials are not routing information.
+    """
+
+    isolation: Isolation
+    #: A logical instance name — ``mem-1``, ``chat-2``. Never a host, never a port. Which physical
+    #: server that resolves to is a deployment fact each service is configured with separately.
+    instance: str
+    #: The database within that instance. Meaningless under ``pooled``, where the shared database is
+    #: whatever the instance's credential points at.
+    database: str | None = None
+
+
+class CatalogDirectory:
+    """Placement from a control plane, composed with locally-held credentials.
+
+    This is the shape L54 asks for. Two halves that never meet in one place:
+
+    * a ``lookup`` coroutine — asks the control plane and gets a :class:`TenantRecord` back; and
+    * an ``instances`` map — ``{"mem-1": (app_dsn, admin_dsn)}``, from this service's own config.
+
+    Neither half is sufficient alone, which is the point: compromising the control plane yields
+    routing information and no way to connect, and compromising a service's config yields
+    credentials and no way to know which tenant lives where.
+
+    ⚠️ **Cache the lookup.** Placement changes approximately never for a given tenant, and this sits
+    in front of the data path's cold start — a service that cannot reach the control plane cannot
+    open a database. Caching is what keeps a control-plane outage degrading to "no *new* tenants
+    served" rather than "nobody served". The cache belongs in the ``lookup`` callable, not here,
+    because its invalidation rule is a control-plane concern (see Q83).
+    """
+
+    def __init__(
+        self,
+        *,
+        lookup: Callable[[Tenant], Awaitable[TenantRecord]],
+        instances: Mapping[str, tuple[str, str]],
+        roster: Callable[[], Awaitable[Sequence[Tenant]]] | None = None,
+    ) -> None:
+        self._lookup = lookup
+        self._instances = dict(instances)
+        self._roster = roster
+
+    async def locate(self, tenant: Tenant) -> Placement:
+        record = await self._lookup(tenant)
+        try:
+            app_dsn, admin_dsn = self._instances[record.instance]
+        except KeyError:
+            raise UnknownTenant(
+                f"tenant {tenant.id!r} is placed on instance {record.instance!r}, which this "
+                "service has no credential for. Either the control plane knows about an instance "
+                "this deployment was not configured with, or the config is stale."
+            ) from None
+
+        if record.isolation is Isolation.pooled or not record.database:
+            return Placement(isolation=Isolation.pooled, dsn=app_dsn, admin_dsn=admin_dsn)
+        return Placement(
+            isolation=Isolation.isolated,
+            dsn=_swap_database(app_dsn, record.database),
+            admin_dsn=_swap_database(admin_dsn, record.database),
+        )
+
+    async def roster(self) -> Sequence[Tenant]:
+        if self._roster is None:
+            raise UnknownTenant(
+                "this directory has no roster source; fleet operations need one from the control "
+                "plane. Discovering tenants from pg_database would be inference, and a fleet "
+                "migration is the last place to guess."
+            )
+        return await self._roster()
