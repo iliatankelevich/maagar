@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: tokip-app/kip-github-actions/.github/workflows/python-ci.yml@main
+
+  secrets:
+    uses: tokip-app/kip-github-actions/.github/workflows/secrets-scan.yml@main

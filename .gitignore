@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Generated gRPC clients/servers (grpc-py / grpc-ts). NEVER committed: produced at
+# build time from the pinned kip-api-schemas contract, so a stale copy can never drift from it.
+generated/
