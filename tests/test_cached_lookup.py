@@ -126,6 +126,47 @@ async def test_invalidate_forces_a_refresh() -> None:
     assert await lookup(ALPHA) == ISOLATED
 
 
+async def test_a_catalog_directory_can_provision() -> None:
+    """⚠️ **The production directory must be able to create databases, and once could not.**
+
+    ``SupportsProvisioning`` was originally a synchronous ``maintenance_dsn`` property plus a
+    synchronous ``database_name`` — a shape only a directory that already knows every answer can
+    satisfy. :class:`CatalogDirectory` has to *ask* the control plane, so it silently failed the
+    ``isinstance`` check and every isolated tenant it routed raised ``ProvisioningError`` at
+    ``provision()``. The static directories used in tests implemented it fine, so nothing noticed.
+
+    The DSN returned must be the **instance**, not the tenant's database: ``CREATE DATABASE`` cannot
+    run from inside its own target.
+    """
+    from maagar import CatalogDirectory
+    from maagar.store import SupportsProvisioning
+
+    directory = CatalogDirectory(
+        lookup=Control(ISOLATED),
+        instances={"mem-1": ("postgresql://app@host/shared", "postgresql://owner@host/shared")},
+    )
+
+    assert isinstance(directory, SupportsProvisioning)
+    dsn, database = await directory.provisioning_target(ALPHA)
+    assert database == "kip_alpha"
+    assert dsn.endswith("/shared"), "provisioning must connect to the instance, not to the target"
+
+
+async def test_provisioning_a_pooled_tenant_is_refused_with_a_reason() -> None:
+    """A pooled tenant has no database of its own, so asking for one is a caller error rather than
+    something to paper over — and papering over it means creating a database nobody routes to."""
+    from maagar import CatalogDirectory
+    from maagar.errors import ProvisioningError
+
+    directory = CatalogDirectory(
+        lookup=Control(POOLED),
+        instances={"mem-1": ("postgresql://app@host/shared", "postgresql://owner@host/shared")},
+    )
+
+    with pytest.raises(ProvisioningError, match="pooled"):
+        await directory.provisioning_target(ALPHA)
+
+
 async def test_tenants_are_cached_independently() -> None:
     """A cache keyed on anything coarser than the tenant would hand one family another's placement —
     the failure this package exists to make impossible."""

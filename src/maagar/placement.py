@@ -38,7 +38,7 @@ from typing import Protocol, runtime_checkable
 
 from sqlalchemy.engine import make_url
 
-from maagar.errors import UnknownTenant
+from maagar.errors import ProvisioningError, UnknownTenant
 from maagar.tenant import Tenant
 
 
@@ -153,6 +153,11 @@ class DatabasePerTenant:
         so provisioning needs a connection that is deliberately pointed somewhere else.
         """
         return self._admin_dsn
+
+    async def provisioning_target(self, tenant: Tenant) -> tuple[str, str]:
+        """:class:`~maagar.store.SupportsProvisioning`. Local knowledge, so nothing is awaited —
+        the coroutine exists for the directories that must go and ask."""
+        return self._admin_dsn, self.database_name(tenant)
 
     async def locate(self, tenant: Tenant) -> Placement:
         database = self.database_name(tenant)
@@ -294,6 +299,32 @@ class CatalogDirectory:
                 "migration is the last place to guess."
             )
         return await self._roster()
+
+    async def provisioning_target(self, tenant: Tenant) -> tuple[str, str]:
+        """:class:`~maagar.store.SupportsProvisioning` — and the reason that protocol is async.
+
+        Which instance a tenant is on, and what its database is called, are the control plane's
+        answers, not this object's. The **instance-level** admin DSN is returned deliberately
+        un-swapped: :meth:`locate` points ``admin_dsn`` *at* the tenant's database, which is right
+        for DDL inside it and useless for creating it, since ``CREATE DATABASE`` cannot run from
+        inside its own target.
+        """
+        record = await self._lookup(tenant)
+        try:
+            _, instance_admin_dsn = self._instances[record.instance]
+        except KeyError:
+            raise UnknownTenant(
+                f"tenant {tenant.id!r} is placed on instance {record.instance!r}, which this "
+                "service has no credential for."
+            ) from None
+
+        if record.isolation is not Isolation.isolated or not record.database:
+            raise ProvisioningError(
+                f"tenant {tenant.id!r} is pooled: there is no database of its own to create or "
+                "drop. Provisioning a pooled tenant is schema convergence, and removing one is a "
+                "schema-aware purge that belongs beside the models."
+            )
+        return instance_admin_dsn, record.database
 
 
 @dataclass(frozen=True, slots=True)

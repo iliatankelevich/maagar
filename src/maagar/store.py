@@ -64,14 +64,26 @@ Upgrade = Callable[[str], Awaitable[None]] | Callable[[str], None]
 
 @runtime_checkable
 class SupportsProvisioning(Protocol):
-    """A directory that can create and drop databases — i.e. one that isolates tenants."""
+    """A directory that can create and drop databases — i.e. one that isolates tenants.
 
-    @property
-    def maintenance_dsn(self) -> str:
-        """Admin access to the *instance*. ``CREATE DATABASE`` cannot run from inside its target."""
+    ⚠️ **Per-tenant and asynchronous, and both of those are load-bearing.** An earlier shape exposed
+    a single ``maintenance_dsn`` property and a synchronous ``database_name``, which works only when
+    the directory already knows every answer locally. A directory backed by a control plane does
+    not: which instance a tenant is on, and what its database is called, are facts it has to go and
+    ask for. A synchronous property cannot ask, so that shape silently excluded the one directory
+    that matters in production from ever provisioning anything.
+
+    Both values are returned together because they come from one lookup and are only meaningful as a
+    pair — a database name is worthless without the instance to create it on.
+    """
+
+    async def provisioning_target(self, tenant: Tenant) -> tuple[str, str]:
+        """``(maintenance_dsn, database_name)`` for this tenant.
+
+        The DSN is admin access to the **instance**, deliberately pointed at some *other* database:
+        ``CREATE DATABASE`` and ``DROP DATABASE`` cannot run from inside the database they target.
+        """
         ...
-
-    def database_name(self, tenant: Tenant) -> str: ...
 
 
 async def _invoke(upgrade: Upgrade, dsn: str) -> None:
@@ -340,20 +352,18 @@ class Maagar:
         if not isinstance(directory, SupportsProvisioning):
             raise ProvisioningError(
                 f"{type(directory).__name__} cannot create or drop databases; it must expose "
-                "maintenance_dsn and database_name to isolate tenants."
+                "provisioning_target to isolate tenants."
             )
         return directory
 
     @asynccontextmanager
-    async def _maintenance(self) -> AsyncIterator[AsyncConnection]:
+    async def _maintenance(self, dsn: str) -> AsyncIterator[AsyncConnection]:
         """A connection to the instance, outside any tenant database, in AUTOCOMMIT.
 
         ``CREATE DATABASE`` and ``DROP DATABASE`` cannot run inside a transaction block, and
         SQLAlchemy opens one by default — so this is not a stylistic choice.
         """
-        engine = create_async_engine(
-            self._provisioner().maintenance_dsn, isolation_level="AUTOCOMMIT"
-        )
+        engine = create_async_engine(dsn, isolation_level="AUTOCOMMIT")
         try:
             async with engine.connect() as conn:
                 yield conn
@@ -361,8 +371,8 @@ class Maagar:
             await engine.dispose()
 
     async def _create_database(self, tenant: Tenant) -> None:
-        name = self._provisioner().database_name(tenant)
-        async with self._maintenance() as conn:
+        maintenance_dsn, name = await self._provisioner().provisioning_target(tenant)
+        async with self._maintenance(maintenance_dsn) as conn:
             exists = await conn.scalar(
                 text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
             )
@@ -375,9 +385,9 @@ class Maagar:
             await conn.execute(text(f'CREATE DATABASE "{name}"'))
 
     async def _drop_database(self, tenant: Tenant) -> None:
-        name = self._provisioner().database_name(tenant)
+        maintenance_dsn, name = await self._provisioner().provisioning_target(tenant)
         await self._pool.dispose_all()
-        async with self._maintenance() as conn:
+        async with self._maintenance(maintenance_dsn) as conn:
             # WITH (FORCE) terminates other sessions; without it the drop fails whenever anything is
             # still connected, which during offboarding is normal rather than exceptional.
             await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
