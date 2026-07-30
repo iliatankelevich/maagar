@@ -30,6 +30,7 @@ reading the code instead of by reading the deployment.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -251,7 +252,8 @@ class CatalogDirectory:
     in front of the data path's cold start — a service that cannot reach the control plane cannot
     open a database. Caching is what keeps a control-plane outage degrading to "no *new* tenants
     served" rather than "nobody served". The cache belongs in the ``lookup`` callable, not here,
-    because its invalidation rule is a control-plane concern.
+    because its invalidation rule is a control-plane concern — see :class:`CachedLookup`, which is
+    that wrapper and not a change to this class.
     """
 
     def __init__(
@@ -292,3 +294,84 @@ class CatalogDirectory:
                 "migration is the last place to guess."
             )
         return await self._roster()
+
+
+@dataclass(frozen=True, slots=True)
+class _CacheEntry:
+    record: TenantRecord
+    fetched_at: float
+
+
+class CachedLookup:
+    """Wraps a :class:`CatalogDirectory` lookup with a TTL and a **serve-stale-on-error** rule.
+
+    A control plane in front of the data path's cold start has to be cached, but the obvious
+    implementation gets the failure mode backwards. A plain TTL cache that expires an entry and
+    then propagates the control plane's error takes **every** tenant down the moment the TTL rolls
+    past an outage — it delays the outage rather than containing it.
+
+    The rule that actually contains it:
+
+    ===================  ==========================================================
+    cached and fresh     return it; the control plane is not called
+    cached and stale     refresh; **if the lookup fails, return the stale record**
+    not cached           call; if the lookup fails, **raise**
+    ===================  ==========================================================
+
+    which is exactly *"an outage degrades to no **new** tenants served, never to nobody served"*.
+    Placement changes approximately never, so a stale record is very nearly always the right answer,
+    and the one case where staleness is unsafe — a tenant migrated between instances — is a
+    deliberate operation that can :meth:`invalidate`.
+
+    ⚠️ **A miss is never cached.** A tenant the control plane has registered but not yet placed must
+    not be remembered as unknown for the length of the TTL: with reconciliation-based provisioning
+    that is a normal, self-resolving state, and caching it would turn a signup seconds away from
+    working into one that fails for an hour.
+
+    ⚠️ **Deliberately not stampede-protected.** Concurrent misses for one tenant each call through.
+    The alternative is a per-tenant lock in front of the data path — a second synchronisation
+    primitive bought with no measurement. Revisit on evidence.
+    """
+
+    #: One hour. Long on purpose: every second of TTL is a second of control-plane outage the caller
+    #: never notices.
+    DEFAULT_TTL_SECONDS = 3600.0
+
+    def __init__(
+        self,
+        lookup: Callable[[Tenant], Awaitable[TenantRecord]],
+        *,
+        ttl_seconds: float = DEFAULT_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._lookup = lookup
+        self._ttl = ttl_seconds
+        self._clock = clock
+        self._entries: dict[str, _CacheEntry] = {}
+        #: Count of stale records served because the control plane was unreachable — the number
+        #: that says "this process is running on memory". Counted rather than logged so it can be a
+        #: metric and an alert; a log line here is one nobody reads until afterwards.
+        self.served_stale = 0
+
+    async def __call__(self, tenant: Tenant) -> TenantRecord:
+        cached = self._entries.get(tenant.id)
+        if cached is not None and self._clock() - cached.fetched_at < self._ttl:
+            return cached.record
+
+        try:
+            record = await self._lookup(tenant)
+        except Exception:
+            if cached is None:
+                # Never resolved. Failing is correct: the alternative is inventing a placement, and
+                # a guessed placement is a cross-tenant write.
+                raise
+            self.served_stale += 1
+            return cached.record
+
+        self._entries[tenant.id] = _CacheEntry(record=record, fetched_at=self._clock())
+        return record
+
+    def invalidate(self, tenant: Tenant) -> None:
+        """Forget one tenant — after a deliberate migration between instances, the one case where a
+        stale record is wrong rather than merely old."""
+        self._entries.pop(tenant.id, None)

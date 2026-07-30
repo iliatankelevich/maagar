@@ -30,6 +30,7 @@ from maagar.errors import (
     UnknownTenant,
 )
 from maagar.placement import (
+    CachedLookup,
     CatalogDirectory,
     DatabasePerTenant,
     Directory,
@@ -51,6 +52,7 @@ from maagar.tenant import Tenant
 
 __all__ = [
     "TENANT_SETTING",
+    "CachedLookup",
     "CatalogDirectory",
     "DatabasePerTenant",
     "Directory",
