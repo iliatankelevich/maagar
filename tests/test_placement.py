@@ -1,4 +1,4 @@
-"""Placement resolution — and the credential boundary that makes L54 safe.
+"""Placement resolution — and the credential boundary that makes the descriptor rule safe.
 
 The interesting assertions are all about what a control plane is **not** allowed to hand out.
 """
@@ -25,11 +25,11 @@ ADMIN = "postgresql+asyncpg://owner:othersecret@db-1:5432/postgres"
 
 
 async def test_a_tenant_record_carries_no_credential() -> None:
-    """⚠️ **The point of L54's descriptor rule, asserted on the type itself.**
+    """⚠️ **The point of the descriptor rule, asserted on the type itself.**
 
     If a field were ever added here that could hold a DSN, the control plane would be holding a
-    credential to every service's database and A2 would be over — not overruled, just quietly
-    meaningless. This test is what makes adding that field a conversation.
+    credential to every service's database and the separation would be over — not overruled, just
+    quietly meaningless. This test is what makes adding that field a conversation.
     """
     record = TenantRecord(isolation=Isolation.isolated, instance="mem-1", database="kip_alpha")
     values = " ".join(str(getattr(record, f)) for f in record.__slots__)

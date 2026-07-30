@@ -67,8 +67,8 @@ class Directory(Protocol):
     """Resolves a tenant to a placement, and enumerates what exists.
 
     Implement this to plug in a real control plane. The two implementations below cover the ends of
-    the spectrum; a mixed fleet is a directory that consults ``kip-mom`` and returns whichever of
-    them applies to that tenant.
+    the spectrum; a mixed fleet is a directory that consults a control plane and returns whichever
+    of them applies to that tenant.
     """
 
     async def locate(self, tenant: Tenant) -> Placement:
@@ -238,7 +238,7 @@ class TenantRecord:
 class CatalogDirectory:
     """Placement from a control plane, composed with locally-held credentials.
 
-    This is the shape L54 asks for. Two halves that never meet in one place:
+    Two halves that never meet in one place:
 
     * a ``lookup`` coroutine — asks the control plane and gets a :class:`TenantRecord` back; and
     * an ``instances`` map — ``{"mem-1": (app_dsn, admin_dsn)}``, from this service's own config.
@@ -251,7 +251,7 @@ class CatalogDirectory:
     in front of the data path's cold start — a service that cannot reach the control plane cannot
     open a database. Caching is what keeps a control-plane outage degrading to "no *new* tenants
     served" rather than "nobody served". The cache belongs in the ``lookup`` callable, not here,
-    because its invalidation rule is a control-plane concern (see Q83).
+    because its invalidation rule is a control-plane concern.
     """
 
     def __init__(

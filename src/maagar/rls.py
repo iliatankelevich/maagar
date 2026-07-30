@@ -12,7 +12,7 @@ realistic workloads is a few percent.
 
 Both are deployment configuration, not code, which is why they are so easy to ship: every policy is
 bypassed, and every test still passes, in exactly the same green way as a correct system. That is
-not hypothetical. The first run of kip-mind's isolation suite connected as the Postgres image's
+not hypothetical. The first run of a consumer's isolation suite connected as the Postgres image's
 ``POSTGRES_USER`` — a superuser — and watched all six cross-tenant assertions pass while policies
 did precisely nothing.
 

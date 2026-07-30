@@ -3,6 +3,8 @@ name = "maagar"
 version = "0.1.0"
 description = "Multi-tenant Postgres access with the placement hidden behind the interface."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy[asyncio]>=2.0",

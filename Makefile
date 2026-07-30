@@ -20,8 +20,8 @@ typecheck: ## Type-check with pyright
 	uv run pyright
 
 # No database needed. Everything here is about the eviction rule and the tenant type; the
-# integration coverage — provisioning, RLS, both placements — lives in kip-mind's isolation suite,
-# which is the only place it can be exercised against real entities.
+# integration coverage — provisioning, RLS, both placements — lives in the consumer's isolation
+# suite, which is the only place it can be exercised against real entities.
 test: ## Run the suite
 	uv run pytest -q
 

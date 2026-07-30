@@ -31,7 +31,7 @@ a tenant on the cheap plan shares a database while a tenant on the private plan 
 in the same process, at the same time. A seam that hides which one a tenant is on is load-bearing
 today, not preparation for a hypothetical migration.
 
-The second reason is that `kip-chat` needs the same machinery against a **different set of
+The second reason is that a second service needs the same machinery against a **different set of
 entities**, and there is no version of "copy the db module across" that stays correct.
 
 ## What it hides, and what it deliberately does not
@@ -84,11 +84,12 @@ The interesting tests are about what the cache **refuses** to do —
 `test_a_leased_engine_is_never_evicted` and
 `test_the_cap_is_exceeded_rather_than_enforced_when_nothing_is_idle`.
 
-**Integration coverage lives in the consumer, deliberately.** `kip-mind`'s isolation suite is
-parametrised over both placements: every cross-tenant assertion runs once pooled and once with a
-real `CREATE DATABASE` per tenant. `test_the_two_placements_are_actually_different` is what stops
-that parametrisation from being vacuous — without it, an isolated fixture that quietly resolved both
-tenants to one database would leave every assertion passing and the isolated path untested.
+**Integration coverage lives in the consumer, deliberately.** The consuming service's isolation
+suite is parametrised over both placements: every cross-tenant assertion runs once pooled and once
+with a real `CREATE DATABASE` per tenant. `test_the_two_placements_are_actually_different` is what
+stops that parametrisation from being vacuous — without it, an isolated fixture that quietly
+resolved both tenants to one database would leave every assertion passing and the isolated path
+untested.
 
 That split is not laziness. This package has no entities of its own, and an isolation test needs
 real tables with real foreign keys to mean anything. Synthetic ones here would prove the test
@@ -101,13 +102,16 @@ per tenant, measured rather than asserted.
 
 ## Status
 
-Extracted from `kip-mind` on 2026-07-28, on the day `kip-chat` became the second consumer — the
-trigger L49 named. It was developed as a workspace member inside `kip-mind` first, so that it was
-generalised *from* a real use rather than *for* an imagined one. Same order `maslul` earned its own
-repo in.
+Extracted from its first consumer on 2026-07-28, the day a second service needed the same
+machinery. It was developed inside that first service as a workspace member, so it was generalised
+*from* a real use rather than *for* an imagined one — the same order `maslul` earned its own repo in.
 
 Not on PyPI, and not general yet: two consumers is enough to justify a repo, not enough to claim an
-API. Expect the interface to move while `kip-chat` is being built.
+API. **Expect the interface to move.**
 
 ⚠️ **Consumers pin a commit, not a branch.** A floating `main` would silently change every service on
-its next build with no diff anywhere to notice it in — the same reasoning as L46 for generated code.
+its next build, with no diff anywhere to notice it in.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

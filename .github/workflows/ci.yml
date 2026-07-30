@@ -10,7 +10,20 @@ permissions:
 
 jobs:
   check:
-    uses: tokip-app/kip-github-actions/.github/workflows/python-ci.yml@main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-  secrets:
-    uses: tokip-app/kip-github-actions/.github/workflows/secrets-scan.yml@main
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      # `make check` is the definition of done locally, so CI runs exactly it — lint, format,
+      # typecheck, tests — rather than a parallel list that can drift from the Makefile.
+      # No database needed: integration coverage lives in the consumer. See "Tests" in the README.
+      - name: Every quality gate
+        run: make check
