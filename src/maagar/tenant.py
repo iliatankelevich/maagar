@@ -27,7 +27,10 @@ _ATTESTATION: Final = object()
 #: is safe unquoted-ish and what stays readable in ``\l``. The 40-byte cap leaves room for the
 #: prefix inside Postgres's 63-byte identifier limit — over which names *truncate silently* and two
 #: different tenants can collide on one database.
-_VALID_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+#: ⚠️ `\Z`, not `$`: Python's `re` lets `$` match immediately before a trailing newline, so an id
+#: with one appended would validate as if it were not there — becoming a second spelling of the
+#: same identifier for any caller that compares the two strings directly.
+_VALID_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}\Z")
 
 
 @final
@@ -56,7 +59,7 @@ class Tenant:
         if not _VALID_ID.match(tenant_id):
             raise InvalidTenantId(
                 f"{tenant_id!r} is not a valid tenant id: expected 1-40 chars matching "
-                r"^[a-z0-9][a-z0-9_-]*$ (it becomes a database identifier)."
+                r"^[a-z0-9][a-z0-9_-]*\Z (it becomes a database identifier)."
             )
         return cls(tenant_id, _ATTESTATION)
 

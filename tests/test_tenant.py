@@ -31,6 +31,7 @@ def test_attested_is_the_way_in() -> None:
         "fam';DROP DATABASE x;--",  # why validation happens before quoting, not instead of it
         "-leading-hyphen",
         "a" * 41,  # over the cap that keeps `kip_<id>` inside Postgres's 63-byte identifier limit
+        "fam-alpha\n",  # `$` would match before this newline; `\Z` does not
     ],
 )
 def test_ids_that_cannot_safely_become_database_names_are_refused(bad: str) -> None:
