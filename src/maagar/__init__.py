@@ -22,7 +22,7 @@ The name is Hebrew — *מאגר*, a reservoir; *מאגר נתונים* is a dat
 interface so no caller branches on it.
 """
 
-from maagar.engines import EnginePool, PoolStats
+from maagar.engines import EnginePool, OnConnect, PoolStats, attach_on_connect
 from maagar.errors import (
     InvalidTenantId,
     MaagarError,
@@ -64,6 +64,7 @@ __all__ = [
     "Isolation",
     "Maagar",
     "MaagarError",
+    "OnConnect",
     "Placement",
     "PoolStats",
     "ProvisioningError",
@@ -76,6 +77,7 @@ __all__ = [
     "UnanchoredKey",
     "UnknownTenant",
     "apply_policies",
+    "attach_on_connect",
     "assert_unprivileged",
     "policy_statements",
     "tenant_scoped_tables",

@@ -37,7 +37,7 @@ entities**, and there is no version of "copy the db module across" that stays co
 ## What it hides, and what it deliberately does not
 
 **Hidden:** placement, DSNs, credentials, engine lifecycle, pool caps and eviction, RLS policy
-management, provisioning, migration fan-out.
+management, provisioning, migration fan-out, and what runs on each new connection.
 
 **Not hidden:** SQLAlchemy. The session handed back is a real `AsyncSession` and the entities are
 real models. Hiding the ORM would mean reimplementing query capability behind a smaller, worse
@@ -74,11 +74,154 @@ startup check that the database contains only the entities this store declared, 
 accident; it cannot prove the rule, because two services could be pointed at one database
 deliberately.
 
+## Binary vectors with pgvector
+
+pgvector's SQLAlchemy column sends every vector to Postgres as decimal text: about 19.7 KB for a
+1,024-dimension embedding, formatted by Python and parsed again by the server. Postgres also accepts
+vectors in binary, 4 bytes a dimension, but pgvector's two halves do not combine on their own.
+`maagar.vectors` makes them combine:
+
+```bash
+pip install "maagar[vectors]"
+```
+
+```python
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from maagar import Maagar, SharedDatabase, Tenant
+from maagar.vectors import BinaryVector, register_binary_vectors
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Passage(Base):
+    __tablename__ = "passages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str]
+    embedding: Mapped[list[float]] = mapped_column(BinaryVector(1024))
+
+
+store = Maagar(
+    metadata=Base.metadata,
+    directory=SharedDatabase(dsn=..., admin_dsn=...),
+    extensions=("vector",),
+    on_connect=register_binary_vectors,
+)
+
+async with store.session(Tenant.attested("alpha")) as db:
+    db.add(Passage(id=1, tenant_id="alpha", embedding=embedding))
+```
+
+Nothing else changes. Queries, `cosine_distance` and the rest work as before, and reading a row
+back still gives a `list[float]`.
+
+### What it buys
+
+| Median of 30 | Text | Binary | Speedup |
+|---|---:|---:|---:|
+| Write 1 vector | 3.4 ms | 2.9 ms | 1.2× |
+| Write 20 | 15.8 ms | 3.9 ms | 4.1× |
+| Write 150 | 91.5 ms | 11.4 ms | 8.0× |
+| Write 500 | 309.0 ms | 32.2 ms | 9.6× |
+| Read 20 | 6.3 ms | 3.5 ms | 1.8× |
+| Read 150 | 28.7 ms | 9.7 ms | 2.9× |
+| Search, top 10 | 24.3 ms | 22.4 ms | 1.1× |
+| Bytes per 1,024-d vector | 19,687 | 4,100 | 4.8× |
+
+**How it was measured.** Every operation went through `store.session()`, on warm engines, with
+1,024-dimension vectors. The two variants alternated which ran first, and each figure is the median
+of 30 timings. Three runs agreed within about 10%.
+
+**The environment.**
+- Apple M2.
+- PostgreSQL 16.14 with pgvector 0.8.2, in Docker on the same machine.
+- Python 3.13, SQLAlchemy 2.0, asyncpg 0.31, pgvector-python 0.5.0.
+
+To reproduce it:
+
+```bash
+MAAGAR_BENCH_DSN=postgresql+asyncpg://user:pass@localhost:5432/postgres \
+    uv run --extra vectors python benchmarks/binary_vectors.py
+```
+
+**How to read it.**
+- **The gain grows with the batch.** One vector barely moves. 20 vectors write about 4× faster,
+  150 about 8×, and 500 about 9–10×. Text costs Python time to format each float and server time to
+  parse it, and binary copies them.
+- **Search does not change, beyond noise** (1.0–1.1× across runs). The distance is computed inside
+  Postgres, and only the query vector crosses the wire.
+- **There is no network in this measurement.** Database and client shared one machine, so the
+  4.8× fewer bytes per vector saved CPU here, not bandwidth.
+- **Values are unchanged.** The benchmark checks that Postgres holds the identical vector either
+  way. Python reads back the same float32 values, in a more exact spelling: binary gives
+  `0.13436424732208252` where text gave `0.13436425`.
+
+### The rules
+
+- **Both halves, always.** pgvector's codec under the ordinary `pgvector.sqlalchemy.Vector` column
+  fails every write with `expected list or ndarray`, because that column has already turned the list
+  into text. `BinaryVector` without the codec fails with `expected str, got list`. Both fail loudly,
+  on the first write.
+- **Every engine that writes these tables runs the hook.** The store's own engines do. For one you
+  create yourself, such as an Alembic `env.py`, a migration's `upgrade(dsn)` or a script:
+
+  ```python
+  from sqlalchemy.ext.asyncio import create_async_engine
+
+  from maagar import attach_on_connect
+  from maagar.vectors import register_binary_vectors
+
+  engine = create_async_engine(dsn)
+  attach_on_connect(engine, register_binary_vectors)
+  ```
+
+- **An extension in another schema** is named with `functools.partial`:
+  `on_connect=partial(register_binary_vectors, schema="extensions")`.
+- **A database without the extension yet is skipped, not refused.** That covers the maintenance
+  database provisioning connects to, and a tenant before its first migration. A connection opened
+  there keeps no codec for its lifetime. So create the extension before a database is served, as
+  `ensure_schema()` and `provision()` do, through `admin()` or your `schema_step`.
+- **Switching an existing column is not a schema change.** The column is `VECTOR(n)` either way, and
+  so is every row already in it.
+
+## A hook on every connection: `on_connect`
+
+`on_connect` is the general mechanism underneath. It is an async function, handed the raw asyncpg
+connection, run once on every new connection the store opens:
+- serving connections;
+- `admin()`;
+- the maintenance connection provisioning uses for `CREATE DATABASE`.
+
+That last one is not a tenant's database, so a hook must not assume what it will find there.
+
+```python
+import asyncpg
+
+from maagar.vectors import register_binary_vectors
+
+
+async def on_connect(conn: asyncpg.Connection) -> None:
+    await register_binary_vectors(conn)
+    await conn.execute("SET application_name = 'billing-worker'")
+
+
+store = Maagar(..., on_connect=on_connect)
+```
+
+It reaches every engine the store creates, and a pool built with a custom `factory` too.
+`attach_on_connect(engine, hook)` is the same thing for engines the store does not create.
+
 ## Tests
 
 ```bash
 make check     # ruff + pyright + pytest. No database needed.
 ```
+
+`tests/test_on_connect.py` drives the store's serving, admin and maintenance paths against a port
+nothing listens on, and checks that every engine they create runs the hook. The round trip through a
+real Postgres is `benchmarks/binary_vectors.py`, which checks the values as well as timing them.
 
 The interesting tests are about what the cache **refuses** to do —
 `test_a_leased_engine_is_never_evicted` and
