@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
@@ -331,6 +331,7 @@ class CatalogDirectory:
 class _CacheEntry:
     record: TenantRecord
     fetched_at: float
+    last_attempt_at: float
 
 
 class CachedLookup:
@@ -345,7 +346,8 @@ class CachedLookup:
 
     ===================  ==========================================================
     cached and fresh     return it; the control plane is not called
-    cached and stale     refresh; **if the lookup fails, return the stale record**
+    stale, retry due     refresh; **if the lookup fails, return the stale record**
+    stale, backing off   return the stale record; the control plane is not called
     not cached           call; if the lookup fails, **raise**
     ===================  ==========================================================
 
@@ -353,6 +355,29 @@ class CachedLookup:
     Placement changes approximately never, so a stale record is very nearly always the right answer,
     and the one case where staleness is unsafe — a tenant migrated between instances — is a
     deliberate operation that can :meth:`invalidate`.
+
+    ⚠️ **A failed refresh backs off instead of retrying on every call.** Without it, once an entry is
+    past its TTL, *every* call pays for a control-plane attempt — fine for a quick failure, costly
+    once the lookup carries a deadline (a caller waiting out a 10-second timeout on a call that was
+    always going to be served from the cache anyway). ``fetched_at`` stays the time of the last
+    *successful* lookup — it is the record's true age, and the only thing the TTL check reads —
+    while a failure instead advances a separate ``retry_interval_seconds`` backoff, so a down
+    control plane is attempted at most once per interval per tenant and a recovered one is noticed
+    within that interval rather than after a full TTL. The backoff is measured from when the
+    attempt *failed*, not from when it started: timing it from the start would let a lookup that
+    hangs past the retry interval (a deadline above the default 30s, or a shorter interval
+    configured to match a tighter one) license the very next call to re-attempt immediately,
+    which is the cap this exists to put on a down control plane, undone. ``served_stale`` counts
+    every call answered from memory past its TTL, attempted or backed off alike: it means *"this
+    tenant is running on a cached record because the control plane wasn't asked, or was asked and
+    failed"*.
+
+    ⚠️ **A failed refresh writes its backoff back only if nothing else changed the entry while it
+    was in flight.** Two races matter: :meth:`invalidate` racing a refresh that is already underway
+    — the failure must not resurrect the pre-migration record :meth:`invalidate` just removed — and
+    two concurrent refreshes, where a slower failure must not overwrite a faster success. Either
+    way the caller that lost the race still returns its own snapshot of the stale record; only the
+    shared cache entry is left alone.
 
     ⚠️ **A miss is never cached.** A tenant the control plane has registered but not yet placed must
     not be remembered as unknown for the length of the TTL: with reconciliation-based provisioning
@@ -368,26 +393,40 @@ class CachedLookup:
     #: never notices.
     DEFAULT_TTL_SECONDS = 3600.0
 
+    #: 30 seconds. Short on purpose: it bounds how long a recovered control plane goes unnoticed,
+    #: while still keeping a down one from being attempted on every single call.
+    DEFAULT_RETRY_INTERVAL_SECONDS = 30.0
+
     def __init__(
         self,
         lookup: Callable[[Tenant], Awaitable[TenantRecord]],
         *,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
+        retry_interval_seconds: float = DEFAULT_RETRY_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._lookup = lookup
         self._ttl = ttl_seconds
+        # Clamped: a retry interval longer than the TTL would never fire, since the TTL check above
+        # it already gates every call.
+        self._retry_interval = min(retry_interval_seconds, ttl_seconds)
         self._clock = clock
         self._entries: dict[str, _CacheEntry] = {}
-        #: Count of stale records served because the control plane was unreachable — the number
-        #: that says "this process is running on memory". Counted rather than logged so it can be a
-        #: metric and an alert; a log line here is one nobody reads until afterwards.
+        #: Count of calls answered from memory past their TTL — attempted-and-failed or backed-off
+        #: alike — because that is what "this process is running on a cached placement" means to an
+        #: alert. Counted rather than logged so it can be a metric; a log line here is one nobody
+        #: reads until afterwards.
         self.served_stale = 0
 
     async def __call__(self, tenant: Tenant) -> TenantRecord:
+        now = self._clock()
         cached = self._entries.get(tenant.id)
-        if cached is not None and self._clock() - cached.fetched_at < self._ttl:
-            return cached.record
+        if cached is not None:
+            if now - cached.fetched_at < self._ttl:
+                return cached.record
+            if now - cached.last_attempt_at < self._retry_interval:
+                self.served_stale += 1
+                return cached.record
 
         try:
             record = await self._lookup(tenant)
@@ -396,10 +435,25 @@ class CachedLookup:
                 # Never resolved. Failing is correct: the alternative is inventing a placement, and
                 # a guessed placement is a cross-tenant write.
                 raise
+            # Only record the attempt if this tenant's entry is still the one read above. While
+            # this failing lookup was in flight, invalidate() may have removed it (a migration —
+            # the one case staleness is wrong, and resurrecting the pre-migration record here would
+            # defeat it) or a concurrent refresh may have replaced it with a fresh success (which a
+            # slower failure must not clobber). Either way, this caller still got a true read of
+            # the cache at the time it asked, so it still returns that snapshot.
+            if self._entries.get(tenant.id) is cached:
+                # Read after the await, not the `now` from before it: the backoff must run from
+                # when the attempt failed, not from when it started. A lookup that hangs longer
+                # than the retry interval would otherwise leave the next call free to re-attempt
+                # immediately, defeating the cap this class exists to put on a down control plane.
+                self._entries[tenant.id] = replace(cached, last_attempt_at=self._clock())
             self.served_stale += 1
             return cached.record
 
-        self._entries[tenant.id] = _CacheEntry(record=record, fetched_at=self._clock())
+        fetched_at = self._clock()
+        self._entries[tenant.id] = _CacheEntry(
+            record=record, fetched_at=fetched_at, last_attempt_at=fetched_at
+        )
         return record
 
     def invalidate(self, tenant: Tenant) -> None:
