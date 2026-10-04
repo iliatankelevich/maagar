@@ -46,12 +46,13 @@ from sqlalchemy import MetaData, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 
-from maagar.engines import EnginePool, PoolStats
+from maagar.engines import EnginePool, OnConnect, PoolStats, attach_on_connect
 from maagar.errors import ProvisioningError
 from maagar.placement import Directory, Isolation, Placement
 from maagar.rls import TENANT_SETTING, apply_policies, assert_unprivileged, tenant_scoped_tables
@@ -148,7 +149,14 @@ class FleetReport:
 
 
 class Maagar:
-    """Multi-tenant data access with the placement hidden behind it."""
+    """Multi-tenant data access with the placement hidden behind it.
+
+    ``on_connect`` runs on every connection the store opens: serving, :meth:`admin`, and the
+    maintenance connection provisioning uses for ``CREATE DATABASE``. That last one is not a
+    tenant's database, so a hook must tolerate a database without what it looks for, as
+    ``maagar.vectors.register_binary_vectors`` does. Engines a caller creates itself get it through
+    :func:`maagar.attach_on_connect`.
+    """
 
     def __init__(
         self,
@@ -162,15 +170,27 @@ class Maagar:
         app_role: str | None = None,
         extensions: Sequence[str] = (),
         schema_step: Upgrade | None = None,
+        on_connect: OnConnect | None = None,
     ) -> None:
         self._metadata = metadata
         self._directory = directory
-        self._pool = EnginePool(max_engines=max_engines, engine_options=engine_options)
+        self._on_connect = on_connect
+        self._pool = EnginePool(
+            max_engines=max_engines, engine_options=engine_options, on_connect=on_connect
+        )
         self._column = tenant_column
         self._setting = tenant_setting
         self._app_role = app_role
         self._extensions = tuple(extensions)
         self._schema_step = schema_step
+
+    # Every engine the store makes outside the serving pool comes through here, so `on_connect`
+    # cannot be forgotten on one of them.
+    def _engine(self, dsn: str, **options: Any) -> AsyncEngine:
+        engine = create_async_engine(dsn, **options)
+        if self._on_connect is not None:
+            attach_on_connect(engine, self._on_connect)
+        return engine
 
     # ------------------------------------------------------------------ serving
 
@@ -252,7 +272,7 @@ class Maagar:
         where the backstop is off — and that should be greppable in one search.
         """
         placement = await self._directory.locate(tenant)
-        engine = create_async_engine(placement.admin_dsn)
+        engine = self._engine(placement.admin_dsn)
         try:
             async with engine.begin() as conn:
                 yield conn
@@ -363,7 +383,7 @@ class Maagar:
         ``CREATE DATABASE`` and ``DROP DATABASE`` cannot run inside a transaction block, and
         SQLAlchemy opens one by default — so this is not a stylistic choice.
         """
-        engine = create_async_engine(dsn, isolation_level="AUTOCOMMIT")
+        engine = self._engine(dsn, isolation_level="AUTOCOMMIT")
         try:
             async with engine.connect() as conn:
                 yield conn

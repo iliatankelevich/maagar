@@ -26,12 +26,35 @@ own when the process stops being shared.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from asyncpg import Connection
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+#: Runs once on every new database connection, handed the raw asyncpg connection: the place to
+#: register a type codec or set a session parameter. ``maagar.vectors.register_binary_vectors`` is
+#: one.
+OnConnect = Callable[[Connection], Awaitable[object]]
+
+
+def attach_on_connect(engine: AsyncEngine, hook: OnConnect) -> None:
+    """Run ``hook`` on every connection ``engine`` opens from now on.
+
+    The store does this for every engine it creates. This is for the ones it does not: an Alembic
+    ``env.py``, a migration's ``upgrade(dsn)``, a script. ⚠️ An engine that writes the same tables
+    must run the same hook — a type codec registered on some connections and not others fails
+    only on the ones without it, which is the hardest version of the bug to find.
+    """
+
+    # SQLAlchemy's connect event is synchronous; `run_async` awaits the hook on the driver's own
+    # connection inside the greenlet the async engine is already running in.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _run(dbapi_connection: Any, _record: Any) -> None:
+        dbapi_connection.run_async(hook)
 
 
 @dataclass(slots=True)
@@ -68,12 +91,14 @@ class EnginePool:
         max_engines: int | None = 64,
         engine_options: Mapping[str, Any] | None = None,
         factory: Callable[[str], AsyncEngine] | None = None,
+        on_connect: OnConnect | None = None,
     ) -> None:
         if max_engines is not None and max_engines < 1:
             raise ValueError("max_engines must be >= 1, or None for unbounded")
         self._max = max_engines
         self._options = dict(engine_options or {"pool_pre_ping": True})
         self._factory = factory or self._default_factory
+        self._on_connect = on_connect
         self._entries: dict[str, _Entry] = {}
         self._lock = asyncio.Lock()
         self._clock = 0
@@ -88,7 +113,12 @@ class EnginePool:
         async with self._lock:
             entry = self._entries.get(dsn)
             if entry is None:
-                entry = _Entry(engine=self._factory(dsn))
+                engine = self._factory(dsn)
+                # On every engine, a caller's factory included: a factory is a choice of engine,
+                # not an opt-out of what every connection needs.
+                if self._on_connect is not None:
+                    attach_on_connect(engine, self._on_connect)
+                entry = _Entry(engine=engine)
                 self._entries[dsn] = entry
             entry.leases += 1
             self._clock += 1
