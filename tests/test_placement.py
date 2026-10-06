@@ -111,3 +111,87 @@ async def test_the_shared_directory_sends_every_tenant_to_one_place() -> None:
     directory = SharedDatabase(dsn=APP, admin_dsn=ADMIN, tenants=(ALPHA, BETA))
     assert await directory.locate(ALPHA) == await directory.locate(BETA)
     assert set(await directory.roster()) == {ALPHA, BETA}
+
+
+class _FakeResult(list):  # rows are indexable, like SQLAlchemy's
+    pass
+
+
+class _FakeConn:
+    def __init__(self, engine: _FakeEngine) -> None:
+        self._engine = engine
+
+    async def __aenter__(self) -> _FakeConn:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, statement: object, params: dict[str, str]) -> _FakeResult:
+        self._engine.queries.append((str(statement), params))
+        return _FakeResult((name,) for name in self._engine.rows)
+
+
+class _FakeEngine:
+    def __init__(self, rows: list[str]) -> None:
+        self.rows = rows
+        self.queries: list[tuple[str, dict[str, str]]] = []
+
+    def connect(self) -> _FakeConn:
+        return _FakeConn(self)
+
+    async def dispose(self) -> None:
+        return None
+
+
+def _discovering(monkeypatch: pytest.MonkeyPatch, rows: list[str]) -> _FakeEngine:
+    from sqlalchemy.ext import asyncio as sa_asyncio
+
+    engine = _FakeEngine(rows)
+    monkeypatch.setattr(sa_asyncio, "create_async_engine", lambda *_a, **_k: engine)
+    return engine
+
+
+def _placement(**kwargs: object) -> DatabasePerTenant:
+    return DatabasePerTenant(
+        instance_dsn=APP,
+        instance_admin_dsn=ADMIN,
+        prefix="kiptest_",
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+async def test_discovery_matches_the_prefix_literally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_` is a LIKE wildcard and every prefix in use contains one."""
+    engine = _discovering(monkeypatch, ["kiptest_fam-alpha"])
+    await _placement().roster()
+
+    [(sql, params)] = engine.queries
+    assert "LIKE" not in sql.upper()
+    assert "starts_with(datname, :prefix)" in sql
+    assert params == {"prefix": "kiptest_"}
+
+
+async def test_discovery_does_not_adopt_a_database_that_only_like_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fake returns the foreign rows regardless of the query, so this exercises the Python guard.
+    _discovering(
+        monkeypatch,
+        ["kiptest05f54e10__registry", "kiptest_fam-alpha", "kiptestab12cd34_fam-beta"],
+    )
+    roster = await _placement().roster()
+    assert [t.id for t in roster] == ["fam-alpha"]
+
+
+async def test_discovery_still_finds_the_genuine_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    _discovering(monkeypatch, ["kiptest_fam-alpha"])
+    assert await _placement().roster() == (ALPHA,)
+
+
+async def test_an_explicit_roster_is_returned_without_touching_the_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _discovering(monkeypatch, ["kiptest_fam-beta"])
+    assert await _placement(roster=[ALPHA]).roster() == (ALPHA,)
+    assert engine.queries == []
