@@ -111,6 +111,19 @@ def test_the_tenant_column_name_is_configurable() -> None:
     assert len(unanchored_foreign_keys(md, column="org")) == 1
 
 
+def test_a_composite_key_on_a_custom_tenant_column_passes() -> None:
+    md = MetaData()
+    _parent(md, tenant="org")
+    Table(
+        "messages",
+        md,
+        Column("org", String),
+        Column("member_id", Integer),
+        ForeignKeyConstraint(["org", "member_id"], ["members.org", "members.id"]),
+    )
+    assert unanchored_foreign_keys(md, column="org") == []
+
+
 def test_the_report_is_sorted_and_names_the_constraint() -> None:
     md = MetaData()
     _parent(md)
