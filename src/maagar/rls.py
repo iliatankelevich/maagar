@@ -75,26 +75,27 @@ def unanchored_foreign_keys(metadata: MetaData, column: str = "tenant_id") -> li
 
     Judged by the table a key points **at**, not the one it lives on: a key from a table without
     the tenant column into a tenant table is reported too, since it has nothing to pair. A
-    self-reference is held to the same rule.
+    self-reference is held to the same rule. Tables are identified as :func:`tenant_scoped_tables`
+    identifies them — by metadata key, so schema-qualified — and the column by its key likewise.
 
-    Derived from the metadata, so a table added tomorrow is covered the moment it exists. Sorted,
-    so the report is stable and a caller can fail with it as is.
+    Raises SQLAlchemy's ``NoReferencedTableError`` for a key whose target is not in ``metadata``:
+    an unknown target might be a tenant table, so skipping it would pass a key nobody judged.
     """
     scoped = set(tenant_scoped_tables(metadata, column))
     return sorted(
         (
             UnanchoredKey(
-                table=table.name,
+                table=table.key,
                 name=key.name if isinstance(key.name, str) else None,
                 columns=tuple(c.name for c in key.columns),
-                referred_table=key.referred_table.name,
+                referred_table=key.referred_table.key,
                 referred_columns=tuple(element.column.name for element in key.elements),
             )
             for table in metadata.tables.values()
             for key in table.foreign_key_constraints
-            if key.referred_table.name in scoped
+            if key.referred_table.key in scoped
             and not any(
-                element.parent.name == column and element.column.name == column
+                element.parent.key == column and element.column.key == column
                 for element in key.elements
             )
         ),
