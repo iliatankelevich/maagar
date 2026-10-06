@@ -30,6 +30,7 @@ the policy denies the read that the missing rows would otherwise have merely... 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import NamedTuple
 
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -51,6 +52,54 @@ def tenant_scoped_tables(metadata: MetaData, column: str = "tenant_id") -> list[
     stale in the direction of *less* coverage.
     """
     return [name for name, table in metadata.tables.items() if column in table.columns]
+
+
+class UnanchoredKey(NamedTuple):
+    """A foreign key into a tenant table that does not carry the tenant."""
+
+    table: str
+    name: str | None
+    columns: tuple[str, ...]
+    referred_table: str
+    referred_columns: tuple[str, ...]
+
+
+def unanchored_foreign_keys(metadata: MetaData, column: str = "tenant_id") -> list[UnanchoredKey]:
+    """Every foreign key into a tenant table that does not pair the tenant column with itself.
+
+    Postgres runs referential integrity with row security bypassed, so ``REFERENCES members(id)``
+    accepts another tenant's member on insert and reaches another tenant's rows on delete. Only a
+    composite key, ``(tenant_id, x) -> (tenant_id, id)``, closes that. A key is anchored when at
+    least one of its elements maps the tenant column to the tenant column; a composite key that
+    merely *contains* the column, paired with some other one, is not.
+
+    Judged by the table a key points **at**, not the one it lives on: a key from a table without
+    the tenant column into a tenant table is reported too, since it has nothing to pair. A
+    self-reference is held to the same rule.
+
+    Derived from the metadata, so a table added tomorrow is covered the moment it exists. Sorted,
+    so the report is stable and a caller can fail with it as is.
+    """
+    scoped = set(tenant_scoped_tables(metadata, column))
+    return sorted(
+        (
+            UnanchoredKey(
+                table=table.name,
+                name=key.name if isinstance(key.name, str) else None,
+                columns=tuple(c.name for c in key.columns),
+                referred_table=key.referred_table.name,
+                referred_columns=tuple(element.column.name for element in key.elements),
+            )
+            for table in metadata.tables.values()
+            for key in table.foreign_key_constraints
+            if key.referred_table.name in scoped
+            and not any(
+                element.parent.name == column and element.column.name == column
+                for element in key.elements
+            )
+        ),
+        key=lambda k: (k.table, k.columns, k.referred_table, k.referred_columns, k.name or ""),
+    )
 
 
 def policy_statements(

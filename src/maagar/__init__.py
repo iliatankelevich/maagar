@@ -42,10 +42,12 @@ from maagar.placement import (
 )
 from maagar.rls import (
     TENANT_SETTING,
+    UnanchoredKey,
     apply_policies,
     assert_unprivileged,
     policy_statements,
     tenant_scoped_tables,
+    unanchored_foreign_keys,
 )
 from maagar.store import FleetReport, Maagar, SupportsProvisioning, TargetOutcome
 from maagar.tenant import Tenant
@@ -71,11 +73,13 @@ __all__ = [
     "TargetOutcome",
     "Tenant",
     "TenantRecord",
+    "UnanchoredKey",
     "UnknownTenant",
     "apply_policies",
     "assert_unprivileged",
     "policy_statements",
     "tenant_scoped_tables",
+    "unanchored_foreign_keys",
 ]
 
 __version__ = "0.1.0"
