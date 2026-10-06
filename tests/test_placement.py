@@ -195,3 +195,9 @@ async def test_an_explicit_roster_is_returned_without_touching_the_database(
     engine = _discovering(monkeypatch, ["kiptest_fam-beta"])
     assert await _placement(roster=[ALPHA]).roster() == (ALPHA,)
     assert engine.queries == []
+
+
+def test_an_empty_prefix_is_refused() -> None:
+    """Empty, `postgres` and the templates are tenants, and decommission can drop `postgres`."""
+    with pytest.raises(ValueError, match="non-empty"):
+        DatabasePerTenant(instance_dsn=APP, instance_admin_dsn=ADMIN, prefix="")
