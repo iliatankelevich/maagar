@@ -181,9 +181,10 @@ class DatabasePerTenant:
             async with engine.connect() as conn:
                 rows = await conn.execute(
                     text(
-                        "SELECT datname FROM pg_database WHERE datname LIKE :pat ORDER BY datname"
+                        "SELECT datname FROM pg_database "
+                        "WHERE starts_with(datname, :prefix) ORDER BY datname"
                     ),
-                    {"pat": f"{self._prefix}%"},
+                    {"prefix": self._prefix},
                 )
                 names = [row[0] for row in rows]
         finally:
@@ -191,6 +192,10 @@ class DatabasePerTenant:
 
         found: list[Tenant] = []
         for name in names:
+            # starts_with() is already literal; this keeps a foreign database out even if the query
+            # is ever loosened, because removeprefix() would hand back the whole foreign name.
+            if not name.startswith(self._prefix):
+                continue
             try:
                 found.append(Tenant.attested(name.removeprefix(self._prefix)))
             except Exception:  # noqa: BLE001 - a database that merely shares the prefix
