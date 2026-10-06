@@ -136,6 +136,11 @@ class DatabasePerTenant:
         prefix: str = "kip_",
         roster: Sequence[Tenant] | None = None,
     ) -> None:
+        # Empty, every database on the instance is a tenant's: discovery adopts `postgres` and the
+        # templates, and a tenant id `postgres` *is* the maintenance database, which decommission
+        # drops. One unset environment variable away (kip-mind reads KIP_DB_PREFIX), so refused.
+        if not prefix:
+            raise ValueError("DatabasePerTenant needs a non-empty database prefix")
         self._dsn = instance_dsn
         self._admin_dsn = instance_admin_dsn
         self._prefix = prefix
