@@ -201,3 +201,11 @@ def test_an_empty_prefix_is_refused() -> None:
     """Empty, `postgres` and the templates are tenants, and decommission can drop `postgres`."""
     with pytest.raises(ValueError, match="non-empty"):
         DatabasePerTenant(instance_dsn=APP, instance_admin_dsn=ADMIN, prefix="")
+
+
+def test_a_prefix_that_would_let_postgres_truncate_a_name_is_refused() -> None:
+    """At 63 bytes Postgres truncates silently, and two tenants sharing a stem share a database."""
+    ok = DatabasePerTenant(instance_dsn=APP, instance_admin_dsn=ADMIN, prefix="p" * 23)
+    assert len(ok.database_name(Tenant.attested("a" * 40)).encode()) == 63
+    with pytest.raises(ValueError, match="identifier limit"):
+        DatabasePerTenant(instance_dsn=APP, instance_admin_dsn=ADMIN, prefix="p" * 24)

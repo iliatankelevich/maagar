@@ -39,7 +39,9 @@ from typing import Protocol, runtime_checkable
 from sqlalchemy.engine import make_url
 
 from maagar.errors import ProvisioningError, UnknownTenant
-from maagar.tenant import Tenant
+from maagar.tenant import MAX_ID_BYTES, Tenant
+
+_PG_IDENTIFIER_BYTES = 63
 
 
 class Isolation(StrEnum):
@@ -141,6 +143,13 @@ class DatabasePerTenant:
         # drops. One unset environment variable away (kip-mind reads KIP_DB_PREFIX), so refused.
         if not prefix:
             raise ValueError("DatabasePerTenant needs a non-empty database prefix")
+        # The id cap leaves room for the prefix only up to here: past 63 bytes Postgres truncates
+        # identifiers silently, and two tenants whose ids share a stem would get one database.
+        if len(prefix.encode()) + MAX_ID_BYTES > _PG_IDENTIFIER_BYTES:
+            raise ValueError(
+                f"database prefix {prefix!r} leaves no room for a {MAX_ID_BYTES}-byte tenant id "
+                f"inside Postgres's {_PG_IDENTIFIER_BYTES}-byte identifier limit"
+            )
         self._dsn = instance_dsn
         self._admin_dsn = instance_admin_dsn
         self._prefix = prefix

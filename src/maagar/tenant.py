@@ -24,13 +24,15 @@ from maagar.errors import InvalidTenantId
 _ATTESTATION: Final = object()
 
 #: Tenant ids become database identifiers (``kip_<id>``), so the charset is the intersection of what
-#: is safe unquoted-ish and what stays readable in ``\l``. The 40-byte cap leaves room for the
-#: prefix inside Postgres's 63-byte identifier limit — over which names *truncate silently* and two
-#: different tenants can collide on one database.
+#: is safe unquoted-ish and what stays readable in ``\l``. The 40-byte cap leaves room for a prefix
+#: of up to 23 bytes inside Postgres's 63-byte identifier limit — over which names *truncate
+#: silently* and two different tenants can collide on one database. ``DatabasePerTenant`` refuses a
+#: longer prefix, so the two numbers are checked against each other rather than trusted.
 #: ⚠️ `\Z`, not `$`: Python's `re` lets `$` match immediately before a trailing newline, so an id
 #: with one appended would validate as if it were not there — becoming a second spelling of the
 #: same identifier for any caller that compares the two strings directly.
-_VALID_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}\Z")
+MAX_ID_BYTES: Final = 40
+_VALID_ID = re.compile(rf"^[a-z0-9][a-z0-9_-]{{0,{MAX_ID_BYTES - 1}}}\Z")
 
 
 @final
