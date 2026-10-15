@@ -213,6 +213,38 @@ store = Maagar(..., on_connect=on_connect)
 It reaches every engine the store creates, and a pool built with a custom `factory` too.
 `attach_on_connect(engine, hook)` is the same thing for engines the store does not create.
 
+## Driver arguments on every connection: `connect_args`
+
+`connect_args` are the driver's arguments for every connection the store opens, the same engines
+`on_connect` reaches. The case that needs it is a transaction-pooling PgBouncer: asyncpg names and
+caches prepared statements per connection, the next transaction may run on another server
+connection, and so the cache has to be off everywhere.
+
+```python
+store = Maagar(
+    ...,
+    engine_options={"pool_size": 5, "max_overflow": 10},  # the serving pool's alone
+    connect_args={"statement_cache_size": 0},  # every connection the store opens
+)
+```
+
+**⚠️ `engine_options` is the serving pool's alone.** Its pool sizes and timeouts mean nothing to a
+one-shot admin engine, so a driver argument put only there turns the cache off for serving and
+leaves it on for `admin()`, provisioning and decommissioning. Behind a pooler that fails
+intermittently, at the first `ensure_schema`.
+
+- **A key set both here and in `engine_options["connect_args"]` is refused.** Two values for one
+  driver argument is a configuration nobody meant.
+- **`DatabasePerTenant` discovers its roster through an engine of its own**, so it takes the same
+  `connect_args` and `on_connect`. Pass it the store's values.
+- **An engine you create yourself takes them from you**: a `schema_step`'s migration, an Alembic
+  `env.py`, a script.
+- **An `EnginePool` with a custom `factory` refuses `connect_args`**, because a factory makes its own
+  engines and the arguments cannot be added to an engine afterwards. Give them to the factory.
+- **An engine handed an existing `pool` keeps that pool's connections**, and with them whatever
+  arguments made it.
+- **No default changes.** Without `connect_args`, every engine is built exactly as before.
+
 ## Tests
 
 ```bash
@@ -220,7 +252,9 @@ make check     # ruff + pyright + pytest. No database needed.
 ```
 
 `tests/test_on_connect.py` drives the store's serving, admin and maintenance paths against a port
-nothing listens on, and checks that every engine they create runs the hook. The round trip through a
+nothing listens on, and checks that every engine they create runs the hook. `tests/test_connect_args.py`
+does the same for `connect_args`, discovery included, and checks that no serving-pool option reaches
+an admin engine. The round trip through a
 real Postgres is `benchmarks/binary_vectors.py`, which checks the values as well as timing them.
 
 The interesting tests are about what the cache **refuses** to do —

@@ -41,6 +41,28 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 OnConnect = Callable[[Connection], Awaitable[object]]
 
 
+def _with_connect_args(
+    options: Mapping[str, Any], connect_args: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """``options`` with ``connect_args`` merged into its own, for ``create_async_engine``.
+
+    ⚠️ **A key set in both is refused, not resolved.** ``connect_args`` is what every connection
+    needs and ``options["connect_args"]`` what one engine wants; two values for one driver argument
+    is a configuration nobody meant, and picking a winner would hide it.
+    """
+    merged = dict(options)
+    if connect_args:
+        own = dict(merged.get("connect_args") or {})
+        clash = sorted(set(own) & set(connect_args))
+        if clash:
+            raise ValueError(
+                f"connect_args {clash} are set both in the store's connect_args and in this "
+                "engine's own options; set each in one place"
+            )
+        merged["connect_args"] = {**own, **connect_args}
+    return merged
+
+
 def attach_on_connect(engine: AsyncEngine, hook: OnConnect) -> None:
     """Run ``hook`` on every connection ``engine`` opens from now on.
 
@@ -92,11 +114,16 @@ class EnginePool:
         engine_options: Mapping[str, Any] | None = None,
         factory: Callable[[str], AsyncEngine] | None = None,
         on_connect: OnConnect | None = None,
+        connect_args: Mapping[str, Any] | None = None,
     ) -> None:
         if max_engines is not None and max_engines < 1:
             raise ValueError("max_engines must be >= 1, or None for unbounded")
+        # A factory makes its engines its own way, and connect_args cannot be added to an engine
+        # after the fact the way a connect hook can. Silently dropping them would be worse.
+        if factory is not None and connect_args:
+            raise ValueError("a factory makes its own engines: give it the connect_args instead")
         self._max = max_engines
-        self._options = dict(engine_options or {"pool_pre_ping": True})
+        self._options = _with_connect_args(engine_options or {"pool_pre_ping": True}, connect_args)
         self._factory = factory or self._default_factory
         self._on_connect = on_connect
         self._entries: dict[str, _Entry] = {}
