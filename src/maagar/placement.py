@@ -34,10 +34,11 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy.engine import make_url
 
+from maagar.engines import OnConnect, _with_connect_args, attach_on_connect
 from maagar.errors import ProvisioningError, UnknownTenant
 from maagar.tenant import MAX_ID_BYTES, Tenant
 
@@ -137,6 +138,8 @@ class DatabasePerTenant:
         instance_admin_dsn: str,
         prefix: str = "kip_",
         roster: Sequence[Tenant] | None = None,
+        connect_args: Mapping[str, Any] | None = None,
+        on_connect: OnConnect | None = None,
     ) -> None:
         # Empty, every database on the instance is a tenant's: discovery adopts `postgres` and the
         # templates, and a tenant id `postgres` *is* the maintenance database, which decommission
@@ -154,6 +157,10 @@ class DatabasePerTenant:
         self._admin_dsn = instance_admin_dsn
         self._prefix = prefix
         self._roster = tuple(roster) if roster is not None else None
+        # Discovery opens an engine of its own, on the maintenance database the store's
+        # provisioning uses, so it takes the store's connect_args and hook: pass the same values.
+        self._connect_args = dict(connect_args or {})
+        self._on_connect = on_connect
 
     def database_name(self, tenant: Tenant) -> str:
         """The database a tenant lives in. Public: provisioning and operators both need it."""
@@ -190,7 +197,9 @@ class DatabasePerTenant:
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
 
-        engine = create_async_engine(self._admin_dsn)
+        engine = create_async_engine(self._admin_dsn, **_with_connect_args({}, self._connect_args))
+        if self._on_connect is not None:
+            attach_on_connect(engine, self._on_connect)
         try:
             async with engine.connect() as conn:
                 rows = await conn.execute(

@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from maagar.engines import EnginePool, OnConnect, PoolStats, attach_on_connect
+from maagar.engines import EnginePool, OnConnect, PoolStats, _with_connect_args, attach_on_connect
 from maagar.errors import ProvisioningError
 from maagar.placement import Directory, Isolation, Placement
 from maagar.rls import TENANT_SETTING, apply_policies, assert_unprivileged, tenant_scoped_tables
@@ -156,6 +156,12 @@ class Maagar:
     tenant's database, so a hook must tolerate a database without what it looks for, as
     ``maagar.vectors.register_binary_vectors`` does. Engines a caller creates itself get it through
     :func:`maagar.attach_on_connect`.
+
+    ``connect_args`` reach the same engines: the driver's arguments for every connection the store
+    opens, such as asyncpg's ``statement_cache_size=0`` behind a transaction-pooling PgBouncer.
+    ⚠️ ``engine_options`` is the **serving pool's alone**: its pool sizes and timeouts mean nothing
+    to a one-shot admin engine, so a driver argument put only there never reaches :meth:`admin`,
+    provisioning or decommissioning.
     """
 
     def __init__(
@@ -171,12 +177,17 @@ class Maagar:
         extensions: Sequence[str] = (),
         schema_step: Upgrade | None = None,
         on_connect: OnConnect | None = None,
+        connect_args: Mapping[str, Any] | None = None,
     ) -> None:
         self._metadata = metadata
         self._directory = directory
         self._on_connect = on_connect
+        self._connect_args = dict(connect_args or {})
         self._pool = EnginePool(
-            max_engines=max_engines, engine_options=engine_options, on_connect=on_connect
+            max_engines=max_engines,
+            engine_options=engine_options,
+            on_connect=on_connect,
+            connect_args=self._connect_args,
         )
         self._column = tenant_column
         self._setting = tenant_setting
@@ -185,9 +196,9 @@ class Maagar:
         self._schema_step = schema_step
 
     # Every engine the store makes outside the serving pool comes through here, so `on_connect`
-    # cannot be forgotten on one of them.
+    # and `connect_args` cannot be forgotten on one of them.
     def _engine(self, dsn: str, **options: Any) -> AsyncEngine:
-        engine = create_async_engine(dsn, **options)
+        engine = create_async_engine(dsn, **_with_connect_args(options, self._connect_args))
         if self._on_connect is not None:
             attach_on_connect(engine, self._on_connect)
         return engine
