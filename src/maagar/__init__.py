@@ -50,7 +50,7 @@ from maagar.rls import (
     unanchored_foreign_keys,
 )
 from maagar.store import FleetReport, Maagar, SupportsProvisioning, TargetOutcome
-from maagar.tenant import Tenant
+from maagar.tenant import Tenant, is_valid_tenant_id
 
 __all__ = [
     "TENANT_SETTING",
@@ -79,6 +79,7 @@ __all__ = [
     "apply_policies",
     "attach_on_connect",
     "assert_unprivileged",
+    "is_valid_tenant_id",
     "policy_statements",
     "tenant_scoped_tables",
     "unanchored_foreign_keys",

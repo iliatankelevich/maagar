@@ -61,7 +61,9 @@ setting when a process serves exactly one tenant.
 **⚠️ A tenant id is attested, never claimed.** `Tenant(...)` raises; `Tenant.attested(...)` is the
 only way in, so a raw `str` from a request body does not type-check and the trust boundary is one
 greppable name. It also validates the charset and length, because tenant ids reach `CREATE DATABASE`
-where they cannot be bound as parameters.
+where they cannot be bound as parameters. `is_valid_tenant_id(value)` is the same shape check as a
+plain predicate, for code that must reject a malformed id but is not a trust boundary; a `True` is
+not an attestation.
 
 **⚠️ `set_config(..., true)`, not `SET LOCAL`.** Postgres does not accept bind parameters in a `SET`
 statement, so `SET LOCAL app.tenant_id = $1` is a syntax error. The alternatives are interpolating
