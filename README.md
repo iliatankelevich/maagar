@@ -223,7 +223,8 @@ connection, and so the cache has to be off everywhere.
 ```python
 store = Maagar(
     ...,
-    engine_options={"pool_size": 5, "max_overflow": 10},  # the serving pool's alone
+    # The serving pool's alone. Given at all, it replaces the default {"pool_pre_ping": True}.
+    engine_options={"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10},
     connect_args={"statement_cache_size": 0},  # every connection the store opens
 )
 ```
@@ -233,10 +234,12 @@ one-shot admin engine, so a driver argument put only there turns the cache off f
 leaves it on for `admin()`, provisioning and decommissioning. Behind a pooler that fails
 intermittently, at the first `ensure_schema`.
 
-- **A key set both here and in `engine_options["connect_args"]` is refused.** Two values for one
-  driver argument is a configuration nobody meant.
-- **`DatabasePerTenant` discovers its roster through an engine of its own**, so it takes the same
-  `connect_args` and `on_connect`. Pass it the store's values.
+- **A key set both here and in `engine_options["connect_args"]` with two values is refused.** Two
+  values for one driver argument is a configuration nobody meant. The same value in both is
+  accepted.
+- **`DatabasePerTenant` discovers its roster through an engine of its own**, and the store hands it
+  its `connect_args` and `on_connect`. Given its own (to discover without a store), they must equal
+  the store's, or the store refuses it.
 - **An engine you create yourself takes them from you**: a `schema_step`'s migration, an Alembic
   `env.py`, a script.
 - **An `EnginePool` with a custom `factory` refuses `connect_args`**, because a factory makes its own

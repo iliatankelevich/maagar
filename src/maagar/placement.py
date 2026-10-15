@@ -38,7 +38,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy.engine import make_url
 
-from maagar.engines import OnConnect, _with_connect_args, attach_on_connect
+from maagar.engines import OnConnect, _build_engine
 from maagar.errors import ProvisioningError, UnknownTenant
 from maagar.tenant import MAX_ID_BYTES, Tenant
 
@@ -158,9 +158,28 @@ class DatabasePerTenant:
         self._prefix = prefix
         self._roster = tuple(roster) if roster is not None else None
         # Discovery opens an engine of its own, on the maintenance database the store's
-        # provisioning uses, so it takes the store's connect_args and hook: pass the same values.
-        self._connect_args = dict(connect_args or {})
+        # provisioning uses, so it needs the store's connect_args and hook. None means "not set
+        # here": a store this directory is given to fills them in (see _adopt).
+        self._connect_args = None if connect_args is None else dict(connect_args)
         self._on_connect = on_connect
+
+    # Called by Maagar, with its own settings. Own settings that differ are refused: discovery would
+    # then connect unlike every other path, and behind a pooler that fails only intermittently.
+    def _adopt(self, connect_args: Mapping[str, Any], on_connect: OnConnect | None) -> None:
+        if self._connect_args is None:
+            self._connect_args = dict(connect_args)
+        elif self._connect_args != dict(connect_args):
+            raise ValueError(
+                "DatabasePerTenant was given connect_args that differ from the store's; leave them "
+                "unset here and the store's apply"
+            )
+        if self._on_connect is None:
+            self._on_connect = on_connect
+        elif self._on_connect is not on_connect:
+            raise ValueError(
+                "DatabasePerTenant was given an on_connect that is not the store's; leave it unset "
+                "here and the store's applies"
+            )
 
     def database_name(self, tenant: Tenant) -> str:
         """The database a tenant lives in. Public: provisioning and operators both need it."""
@@ -195,11 +214,10 @@ class DatabasePerTenant:
 
     async def _discover(self) -> Sequence[Tenant]:
         from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
 
-        engine = create_async_engine(self._admin_dsn, **_with_connect_args({}, self._connect_args))
-        if self._on_connect is not None:
-            attach_on_connect(engine, self._on_connect)
+        engine = _build_engine(
+            self._admin_dsn, connect_args=self._connect_args, on_connect=self._on_connect
+        )
         try:
             async with engine.connect() as conn:
                 rows = await conn.execute(

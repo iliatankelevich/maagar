@@ -87,7 +87,7 @@ def made(monkeypatch: pytest.MonkeyPatch) -> list[AsyncEngine]:
         engines.append(engine)
         return engine
 
-    monkeypatch.setattr("maagar.store.create_async_engine", recording)
+    # Every engine maagar opens is built in maagar.engines: the serving pool's, and the store's own.
     monkeypatch.setattr("maagar.engines.create_async_engine", recording)
     return engines
 
