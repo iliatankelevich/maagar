@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from maagar import InvalidTenantId, Tenant
+from maagar import InvalidTenantId, Tenant, is_valid_tenant_id
 
 
 def test_the_bare_constructor_is_refused() -> None:
@@ -56,3 +56,33 @@ def test_a_tenant_is_not_equal_to_its_own_id() -> None:
     """Otherwise ``tenant == "fam-alpha"`` would quietly work, and every place that should have been
     forced to say ``tenant.id`` would keep passing a ``Tenant`` into a string column."""
     assert Tenant.attested("fam-alpha") != "fam-alpha"
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [
+        ("a", True),
+        ("0", True),
+        ("fam-alpha", True),
+        ("kip_abc", True),
+        ("a" * 40, True),
+        ("", False),
+        ("a" * 41, False),
+        ("A", False),
+        ("-a", False),
+        ("_a", False),
+        ("a b", False),
+        ("fam-alpha\n", False),
+        ("fam-alpha\r\n", False),
+        ("f\u00e9", False),
+        ("\u0663", False),  # Arabic-Indic digit: `\d` would take it, the class does not
+        ("\uff11", False),  # fullwidth digit
+    ],
+)
+def test_the_predicate_agrees_with_attested(value: str, valid: bool) -> None:
+    assert is_valid_tenant_id(value) is valid
+    if valid:
+        assert Tenant.attested(value).id == value
+    else:
+        with pytest.raises(InvalidTenantId):
+            Tenant.attested(value)
