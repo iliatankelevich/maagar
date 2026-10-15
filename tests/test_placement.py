@@ -145,10 +145,9 @@ class _FakeEngine:
 
 
 def _discovering(monkeypatch: pytest.MonkeyPatch, rows: list[str]) -> _FakeEngine:
-    from sqlalchemy.ext import asyncio as sa_asyncio
-
     engine = _FakeEngine(rows)
-    monkeypatch.setattr(sa_asyncio, "create_async_engine", lambda *_a, **_k: engine)
+    # Discovery builds its engine where the store builds its own.
+    monkeypatch.setattr("maagar.engines.create_async_engine", lambda *_a, **_k: engine)
     return engine
 
 

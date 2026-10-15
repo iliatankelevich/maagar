@@ -36,10 +36,8 @@ def made(monkeypatch: pytest.MonkeyPatch) -> list[tuple[AsyncEngine, dict[str, A
         engines.append((engine, options))
         return engine
 
-    monkeypatch.setattr("maagar.store.create_async_engine", recording)
+    # Every engine maagar opens is built in maagar.engines, discovery's included.
     monkeypatch.setattr("maagar.engines.create_async_engine", recording)
-    # Discovery imports it when it runs, from SQLAlchemy itself.
-    monkeypatch.setattr("sqlalchemy.ext.asyncio.create_async_engine", recording)
     return engines
 
 
@@ -126,6 +124,13 @@ def test_a_driver_argument_set_in_both_places_is_refused() -> None:
         )
 
 
+def test_the_same_value_in_both_places_is_accepted() -> None:
+    pool = EnginePool(
+        engine_options={"connect_args": {"statement_cache_size": 0}}, connect_args=CACHE_OFF
+    )
+    assert pool._options["connect_args"] == CACHE_OFF
+
+
 def test_a_pool_with_a_factory_refuses_connect_args_it_could_not_apply() -> None:
     with pytest.raises(ValueError, match="factory"):
         EnginePool(factory=create_async_engine, connect_args=CACHE_OFF)
@@ -152,3 +157,44 @@ async def test_discovery_without_them_is_as_before(
     [(engine, options)] = made
     assert options == {}
     assert _connect(engine) == []
+
+
+async def test_a_store_hands_discovery_its_own_settings(
+    made: list[tuple[AsyncEngine, dict[str, Any]]],
+) -> None:
+    directory = DatabasePerTenant(instance_dsn=NOWHERE, instance_admin_dsn=NOWHERE)
+    store = Maagar(
+        metadata=MetaData(), directory=directory, connect_args=CACHE_OFF, on_connect=hook
+    )
+    with pytest.raises(OSError):
+        await directory.roster()
+    [(engine, options)] = made
+    assert options == {"connect_args": CACHE_OFF}
+    assert _connect(engine) == [hook]
+    await store.dispose()
+
+
+async def hook_elsewhere(conn: Any) -> None:
+    return None
+
+
+@pytest.mark.parametrize(
+    "own",
+    [
+        {"connect_args": {"statement_cache_size": 100}},
+        {"connect_args": {}},
+        {"on_connect": hook_elsewhere},
+    ],
+    ids=["other connect_args", "none where the store has some", "another hook"],
+)
+def test_discovery_settings_unlike_the_stores_are_refused(own: dict[str, Any]) -> None:
+    directory = DatabasePerTenant(instance_dsn=NOWHERE, instance_admin_dsn=NOWHERE, **own)
+    with pytest.raises(ValueError, match="DatabasePerTenant"):
+        Maagar(metadata=MetaData(), directory=directory, connect_args=CACHE_OFF, on_connect=hook)
+
+
+def test_discovery_settings_equal_to_the_stores_are_accepted() -> None:
+    directory = DatabasePerTenant(
+        instance_dsn=NOWHERE, instance_admin_dsn=NOWHERE, connect_args=CACHE_OFF, on_connect=hook
+    )
+    Maagar(metadata=MetaData(), directory=directory, connect_args=CACHE_OFF, on_connect=hook)

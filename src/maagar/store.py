@@ -49,12 +49,11 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
-from maagar.engines import EnginePool, OnConnect, PoolStats, _with_connect_args, attach_on_connect
+from maagar.engines import EnginePool, OnConnect, PoolStats, _build_engine
 from maagar.errors import ProvisioningError
-from maagar.placement import Directory, Isolation, Placement
+from maagar.placement import DatabasePerTenant, Directory, Isolation, Placement
 from maagar.rls import TENANT_SETTING, apply_policies, assert_unprivileged, tenant_scoped_tables
 from maagar.tenant import Tenant
 
@@ -189,6 +188,10 @@ class Maagar:
             on_connect=on_connect,
             connect_args=self._connect_args,
         )
+        # Discovery connects through an engine of the directory's own; it takes the store's settings
+        # unless it was given its own, and differing ones are refused.
+        if isinstance(directory, DatabasePerTenant):
+            directory._adopt(self._connect_args, on_connect)
         self._column = tenant_column
         self._setting = tenant_setting
         self._app_role = app_role
@@ -198,10 +201,9 @@ class Maagar:
     # Every engine the store makes outside the serving pool comes through here, so `on_connect`
     # and `connect_args` cannot be forgotten on one of them.
     def _engine(self, dsn: str, **options: Any) -> AsyncEngine:
-        engine = create_async_engine(dsn, **_with_connect_args(options, self._connect_args))
-        if self._on_connect is not None:
-            attach_on_connect(engine, self._on_connect)
-        return engine
+        return _build_engine(
+            dsn, connect_args=self._connect_args, on_connect=self._on_connect, **options
+        )
 
     # ------------------------------------------------------------------ serving
 

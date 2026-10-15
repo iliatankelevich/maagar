@@ -46,14 +46,15 @@ def _with_connect_args(
 ) -> dict[str, Any]:
     """``options`` with ``connect_args`` merged into its own, for ``create_async_engine``.
 
-    ⚠️ **A key set in both is refused, not resolved.** ``connect_args`` is what every connection
-    needs and ``options["connect_args"]`` what one engine wants; two values for one driver argument
-    is a configuration nobody meant, and picking a winner would hide it.
+    ⚠️ **A key set in both with two values is refused, not resolved.** ``connect_args`` is what every
+    connection needs and ``options["connect_args"]`` what one engine wants; two values for one
+    driver argument is a configuration nobody meant, and picking a winner would hide it. The same
+    value in both is a consumer that set it before ``connect_args`` existed, and is accepted.
     """
     merged = dict(options)
     if connect_args:
         own = dict(merged.get("connect_args") or {})
-        clash = sorted(set(own) & set(connect_args))
+        clash = sorted(k for k in set(own) & set(connect_args) if own[k] != connect_args[k])
         if clash:
             raise ValueError(
                 f"connect_args {clash} are set both in the store's connect_args and in this "
@@ -61,6 +62,22 @@ def _with_connect_args(
             )
         merged["connect_args"] = {**own, **connect_args}
     return merged
+
+
+# An engine outside the serving pool, with what every connection needs: the store's own (admin,
+# maintenance) and discovery's. One builder, so the next per-connection setting cannot reach one of
+# them and miss the other.
+def _build_engine(
+    dsn: str,
+    *,
+    connect_args: Mapping[str, Any] | None,
+    on_connect: OnConnect | None,
+    **options: Any,
+) -> AsyncEngine:
+    engine = create_async_engine(dsn, **_with_connect_args(options, connect_args))
+    if on_connect is not None:
+        attach_on_connect(engine, on_connect)
+    return engine
 
 
 def attach_on_connect(engine: AsyncEngine, hook: OnConnect) -> None:
