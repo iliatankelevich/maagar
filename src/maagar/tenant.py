@@ -35,6 +35,16 @@ MAX_ID_BYTES: Final = 40
 _VALID_ID = re.compile(rf"^[a-z0-9][a-z0-9_-]{{0,{MAX_ID_BYTES - 1}}}\Z")
 
 
+def is_valid_tenant_id(value: str) -> bool:
+    """Whether ``value`` is spelled as a tenant id: the shape check, and nothing more.
+
+    A ``True`` here is not an attestation: the string *could* name a tenant. Use it where a caller
+    must reject a malformed id (an operator's input, a stored row) without minting a
+    :class:`Tenant`; only :meth:`Tenant.attested`, at the trust boundary, makes one.
+    """
+    return _VALID_ID.match(value) is not None
+
+
 @final
 class Tenant:
     """An attested tenant identity."""
@@ -58,7 +68,7 @@ class Tenant:
 
         Call this where the credential is checked, and nowhere else.
         """
-        if not _VALID_ID.match(tenant_id):
+        if not is_valid_tenant_id(tenant_id):
             raise InvalidTenantId(
                 f"{tenant_id!r} is not a valid tenant id: expected 1-40 chars matching "
                 r"^[a-z0-9][a-z0-9_-]*\Z (it becomes a database identifier)."
